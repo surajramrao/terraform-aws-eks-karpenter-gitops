@@ -1,0 +1,12 @@
+variable "aws_region"                           { type = string }
+variable "execution_role_arn"                   { type = string }
+variable "admin_principal_arn"                  { type = string }
+variable "cluster_name"                         { type = string }
+variable "cluster_version"                      { type = string }
+variable "vpc_cidr"                             { type = string }
+variable "single_nat_gateway"                   { type = bool }
+variable "cluster_endpoint_public_access"       { type = bool }
+variable "cluster_endpoint_public_access_cidrs" { type = list(string) }
+variable "system_node_instance_types"           { type = list(string) }
+variable "system_node_min_size"                 { type = number }
+variable "system_node_max_size"                 { type = number }

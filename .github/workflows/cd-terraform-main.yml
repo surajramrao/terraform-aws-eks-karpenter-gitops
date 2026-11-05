@@ -1,0 +1,157 @@
+name: "02 — Main Terraform CD: Trivy Gate -> Deploy Dev -> Approval Gate -> Deploy Prod"
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "modules/**"
+      - "environments/**"
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: "Select environment deployment scope"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - dev-only
+          - both
+
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+
+# Prevent concurrent state mutations across main branch runs
+concurrency:
+  group: terraform-main-cd
+  cancel-in-progress: false
+
+jobs:
+  # ============================================================================
+  # STAGE 1: Pre-Deploy Security & Compliance Gate (Blocks Main CD on Violation)
+  # ============================================================================
+  pre-deploy-security-gate:
+    name: "Stage 1: Pre-Deploy Trivy & TFLint Gate (${{ matrix.env }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        env: [dev, prod]
+    defaults:
+      run:
+        working-directory: environments/${{ matrix.env }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+
+      - name: Stateless Init & Validate
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Setup & Execute TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.54.0
+      - name: Run TFLint
+        run: |
+          tflint --init --config ../../.tflint.hcl
+          tflint --config ../../.tflint.hcl
+
+      - name: Run Trivy IaC Security Gate
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: 'config'
+          scan-ref: 'environments/${{ matrix.env }}'
+          trivyignores: '.trivyignore'
+          hide-progress: true
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+  # ============================================================================
+  # STAGE 2: Deploy Development Environment (environments/dev)
+  # ============================================================================
+  deploy-dev:
+    name: "Stage 2: Plan & Apply Development (environments/dev)"
+    needs: [pre-deploy-security-gate]
+    if: vars.AWS_OIDC_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    environment:
+      name: development
+    defaults:
+      run:
+        working-directory: environments/dev
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS OIDC Federation
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+
+      - name: Initialize Dev Root Module (Hardcoded S3 Backend + KMS Lockfile)
+        run: terraform init -input=false
+
+      - name: Generate Immutable Execution Plan (environments/dev)
+        run: terraform plan -input=false -out=dev.tfplan
+
+      - name: Apply Immutable Execution Plan (environments/dev)
+        run: terraform apply -input=false -auto-approve dev.tfplan
+
+  # ============================================================================
+  # STAGE 3: Production Plan & Manual Approval Gate (environments/prod)
+  # In Enterprise GitHub Actions, the `production` Environment requires
+  # designated Platform/Security Reviewers to approve before `terraform apply` runs.
+  # ============================================================================
+  deploy-prod:
+    name: "Stage 3: Approval Gate & Apply Production (environments/prod)"
+    needs: [deploy-dev]
+    if: >-
+      vars.AWS_OIDC_ROLE_ARN != '' &&
+      (github.event_name == 'push' || inputs.target_environment == 'both')
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    defaults:
+      run:
+        working-directory: environments/prod
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS OIDC Federation
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+
+      - name: Initialize Prod Root Module (Hardcoded S3 Backend + KMS Lockfile)
+        run: terraform init -input=false
+
+      - name: Generate Immutable Execution Plan (environments/prod)
+        run: terraform plan -input=false -out=prod.tfplan
+
+      - name: Apply Approved Execution Plan (environments/prod)
+        run: terraform apply -input=false -auto-approve prod.tfplan

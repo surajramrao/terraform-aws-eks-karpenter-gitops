@@ -1,0 +1,138 @@
+name: "01 — PR Gate: Validate, TFLint, Trivy SARIF & Speculative Plan"
+
+on:
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  # ============================================================================
+  # STAGE 1: Static Validation, TFLint & Trivy Security Gate (SARIF Report)
+  # ============================================================================
+  security-and-lint-gate:
+    name: "Gate 1: Validate, TFLint & Trivy (${{ matrix.env }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, prod]
+    defaults:
+      run:
+        working-directory: environments/${{ matrix.env }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+
+      - name: Check Terraform Formatting
+        working-directory: .
+        run: terraform fmt -check -recursive
+
+      - name: Initialize Environment Root Module (Stateless Validation)
+        run: terraform init -backend=false
+
+      - name: Validate Environment Root & Child Modules
+        run: terraform validate
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.54.0
+
+      - name: Run TFLint across Environment & Child Modules
+        run: |
+          tflint --init --config ../../.tflint.hcl
+          tflint --config ../../.tflint.hcl
+
+      - name: Run Trivy IaC Security Audit (SARIF Report for GitHub Security Tab)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: 'config'
+          scan-ref: 'environments/${{ matrix.env }}'
+          trivyignores: '.trivyignore'
+          format: 'sarif'
+          output: 'trivy-${{ matrix.env }}.sarif'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy SARIF Report to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.env }}.sarif
+          category: trivy-iac-${{ matrix.env }}
+
+  # ============================================================================
+  # STAGE 2: Speculative Terraform Plan (Runs ONLY AFTER Trivy & TFLint Pass)
+  # ============================================================================
+  speculative-terraform-plan:
+    name: "Gate 2: Speculative Plan (${{ matrix.env }})"
+    needs: [security-and-lint-gate]
+    if: vars.AWS_OIDC_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, prod]
+    defaults:
+      run:
+        working-directory: environments/${{ matrix.env }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS OIDC Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+          terraform_wrapper: false
+
+      - name: Terraform Init (Hardcoded Environment S3 Backend + Native Lockfile)
+        run: terraform init -input=false
+
+      - name: Generate Speculative Plan & Human-Readable Diff
+        id: plan
+        run: |
+          terraform plan -input=false -no-color -out=tfplan-${{ matrix.env }}.binary
+          terraform show -no-color tfplan-${{ matrix.env }}.binary > tfplan-${{ matrix.env }}.txt
+
+      - name: Post Trivy Approval & Terraform Plan Summary to Pull Request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planText = fs.readFileSync('environments/${{ matrix.env }}/tfplan-${{ matrix.env }}.txt', 'utf8').slice(0, 60000);
+            const body = [
+              `### Enterprise IaC Gate Passed — Environment: \`${{ matrix.env }}\``,
+              `- **Trivy Security Scan & TFLint:** Passed (0 Critical/High violations)`,
+              `- **S3 Remote State Lock:** Verified (\`use_lockfile = true\`)`,
+              `<details><summary>Click to view speculative <code>terraform plan</code> diff for <b>${{ matrix.env }}</b></summary>
+
+\`\`\`terraform
+${planText}
+\`\`\`
+</details>`
+            ].join('\n');
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });

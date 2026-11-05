@@ -1,0 +1,5 @@
+# Documented architectural exceptions for upstream community modules:
+# VPC Flow Logs CloudWatch group uses default AWS encryption in non-regulated tiers
+AVD-AWS-0017
+# EKS Egress is open to 0.0.0.0/0 to allow pulling public container images from ECR Public / DockerHub
+AVD-AWS-0104

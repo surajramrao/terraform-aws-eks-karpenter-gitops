@@ -1,0 +1,12 @@
+aws_region                           = "ap-south-1"
+execution_role_arn                   = "arn:aws:iam::222222222222:role/TerraformExecutionRole-Prod"
+admin_principal_arn                  = "arn:aws:iam::222222222222:role/PlatformAdminSSORole-Prod"
+cluster_name                         = "platform-eks-prod"
+cluster_version                      = "1.32"
+vpc_cidr                             = "10.20.0.0/16"
+single_nat_gateway                   = false               # Multi-AZ NAT Gateways for Prod HA
+cluster_endpoint_public_access       = false               # Strictly private EKS API in Prod
+cluster_endpoint_public_access_cidrs = []
+system_node_instance_types           = ["m6i.xlarge", "m6a.xlarge"]
+system_node_min_size                 = 3
+system_node_max_size                 = 6

@@ -1,0 +1,12 @@
+aws_region                           = "ap-south-1"
+execution_role_arn                   = "arn:aws:iam::111111111111:role/TerraformExecutionRole-Dev"
+admin_principal_arn                  = "arn:aws:iam::111111111111:role/PlatformAdminSSORole-Dev"
+cluster_name                         = "platform-eks-dev"
+cluster_version                      = "1.32"
+vpc_cidr                             = "10.10.0.0/16"
+single_nat_gateway                   = true
+cluster_endpoint_public_access       = true
+cluster_endpoint_public_access_cidrs = ["203.0.113.50/32"] # Corporate VPN CIDR only
+system_node_instance_types           = ["t3.large", "m6i.large"]
+system_node_min_size                 = 2
+system_node_max_size                 = 3
